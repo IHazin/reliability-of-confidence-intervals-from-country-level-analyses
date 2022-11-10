@@ -284,12 +284,14 @@ timss_result_ctrl <- timss_ci %>%
 
 ```
 
-## Figure:
+# Figures:
+
+## Figure 1:
 ```{r}
 
-data_combined <- read_rds("../data-processed/results-combined.rds")
+results_combined <- read_rds("../data-processed/results-combined.rds")
 
-data_combined %>% 
+results_combined %>% 
 # Add results controlled for world region to data_combined:
   bind_rows(ismn_result_ctrl %>% mutate(source = "ISMN", ctrl = "Controlled"),
             wvs_result_ctrl %>% mutate(source = "WVS", ctrl = "Controlled"),
@@ -326,7 +328,141 @@ data_combined %>%
 
 ```
 
+## Figure 2:
 
+Histograms of HDI scores for:
+
+1. The entire set of the world's countries:
+```{r}
+
+hdi_2021data <- readxl::read_xlsx("../data-raw/HDI_21-22.xlsx")
+
+# Clean data-set:
+hdi_2021data <- hdi_2021data %>% 
+  slice(-1:-7) %>% 
+  rename(`HDI rank` = Back, 
+         Country = `Table 1. Human Development Index and its components`,
+         HDI = `...3`,
+         `Life expectancy at birth` = `...5`,
+         `Expected years of schooling` = `...7`,
+         `Mean years of schooling` = `...9`,
+         `Gross national income (GNI) per capita` = `...11`) %>% 
+  # Keep relevant variables only:
+  select(`HDI rank`:HDI, `Life expectancy at birth`, `Expected years of schooling`, `Mean years of schooling`, `Gross national income (GNI) per capita`) %>% 
+  mutate_at(vars(HDI:`Gross national income (GNI) per capita`), ~as.numeric(.)) %>% 
+  drop_na(`HDI rank`, HDI) %>% 
+  # Clean country names:
+  mutate(Country = case_when(
+    Country == "Bolivia (Plurinational State of)" ~ "Bolivia", 
+    Country == "Congo (Democratic Republic of the)" ~ "Congo, Democratic Republic of the", 
+    Country == "Côte d'Ivoire" ~ "Cote d'Ivoire", 
+    Country == "Czechia" ~ "Czech Republic", 
+    Country == "Eswatini (Kingdom of)" ~ "Eswatini", 
+    Country == "Hong Kong, China (SAR)" ~ "Hong Kong", 
+    Country == "Korea (Republic of)" ~ "South Korea", 
+    Country == "Moldova (Republic of)" ~ "Moldova, Republic of", 
+    Country == "Tanzania (United Republic of)" ~ "Tanzania, United Republic of", 
+    Country == "Türkiye" ~ "Turkey", 
+    Country == "Venezuela (Bolivarian Republic of)" ~ "Venezuela", 
+    TRUE ~ Country))
+
+```
+
+```{r}
+
+# Histogram:
+(panel_a <- hdi_2021data %>% 
+  ggplot(aes(x = HDI)) +
+  geom_histogram(fill = "midnightblue", color = "white") +
+  labs(y = NULL, x = NULL) +
+  ggtitle("191 countries"))
+  
+```
+
+2. Only ISMN countries:
+```{r}
+
+(panel_b <- hdi_2021data %>% 
+  filter(Country %in% ismn_countries) %>% 
+  ggplot(aes(x = HDI)) +
+  geom_histogram(fill = "midnightblue", color = "white") +
+  labs(y = NULL, x = NULL) +
+  ggtitle("57 ISMN countries"))
+
+```
+
+3. Only WVS countries:
+```{r}
+
+(panel_c <- hdi_2021data %>% 
+  filter(Country %in% wvs_countries) %>% 
+  ggplot(aes(x = HDI)) +
+  geom_histogram(fill = "midnightblue", color = "white") +
+  labs(y = NULL, x = NULL) +
+  ggtitle("46 WVS countries"))
+
+```
+
+4. Only ISSP countries:
+```{r}
+
+(panel_d <- hdi_2021data %>% 
+  filter(Country %in% issp_countries) %>% 
+  ggplot(aes(x = HDI)) +
+  geom_histogram(fill = "midnightblue", color = "white") +
+  labs(y = NULL, x = NULL) +
+  ggtitle("32 ISSP countries"))
+
+```
+
+5. Only PISA countries:
+```{r}
+
+(panel_e <- hdi_2021data %>% 
+  filter(Country %in% pisa_countries) %>% 
+  ggplot(aes(x = HDI)) +
+  geom_histogram(fill = "midnightblue", color = "white") +
+  labs(y = NULL, x = NULL) +
+  ggtitle("65 PISA countries"))
+
+```
+
+6. Only TIMSS countries:
+```{r}
+
+(panel_f <- hdi_2021data %>% 
+  filter(Country %in% timss_countries) %>% 
+  ggplot(aes(x = HDI)) +
+  geom_histogram(fill = "midnightblue", color = "white") +
+  labs(y = NULL, x = "HDI score") +
+  ggtitle("36 TIMSS countries"))
+
+```
+
+All panels:
+```{r}
+
+cowplot::plot_grid(panel_a, panel_b, panel_c, panel_d, panel_e, panel_f, align = "hv", ncol = 1)
+
+ggsave("../figures/figure2_histograms.jpeg", width = 6.5, height = 15)
+
+```
+
+## Figure 3:
+```{r}
+
+bvalues %>%
+  rename(bvalue = true_b_value) %>% 
+  left_join(bvalues_ctrl %>% 
+              rename(bvalue_ctrl = true_b_value)) %>% 
+  mutate(quotient = bvalue_ctrl/bvalue) %>% 
+  ggplot(aes(x = quotient)) +
+  geom_histogram(fill = "lightgrey", color = "black", binwidth = 1) +
+  labs(x = "Quotient", y = NULL)
+
+ggsave("../figures/figure3_quotients.jpeg", width = 6.5, height = 4.5)
+
+```
 
 
 
