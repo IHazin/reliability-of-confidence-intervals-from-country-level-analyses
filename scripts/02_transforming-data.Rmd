@@ -1,0 +1,211 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+
+library(tidyverse)
+library(pastecs)
+
+```
+
+# Read and clean data:
+```{r}
+
+data_combined <- read_rds("../data-processed/full-data-set_United Nations_World Bank_Gallup.rds")
+
+# Keep only variables of interest:
+vars_of_interest <- c("Current health expenditure (% of GDP)_2018",
+                      "GDP per capita (US dollars)_2019",
+                      "Infant mortality for both sexes (per 1,000 live births)_2020",
+                      "Labour force participation - Female_2020",
+                      "Labour force participation - Total_2020",
+                      "Life expectancy at birth for both sexes (years)_2020",
+                      "Maternal mortality ratio (deaths per 100,000 population)_2017",
+                      "Population annual rate of increase (percent)_2020",
+                      "Seats held by women in national parliament, as of February (%)_2021",
+                      "Threatened Species: Total (number)_2021",
+                      "Total fertility rate (children per women)_2020",
+                      "Unemployment rate - Total_2020",
+                      "Adolescent fertility rate (births per 1,000 women ages 15-19)_2019",
+                      "CO2 emissions (metric tons per capita)_2018",
+                      "GNI per capita, PPP (current international $)_2020",
+                      "Immunization, measles (% of children ages 12-23 months)_2019",
+                      "Net migration_2017",
+                      "Terrestrial and marine protected areas (% of total territorial area)_2018",
+                      "Time required to start a business (days)_2019",
+                      "climate-change-threat_2019",
+                      "general-corruption_2019",
+                      "likely-harm-crime_2019",
+                      "likely-harm-food_2019",
+                      "likely-harm-water_2019",
+                      "likely-physically-attacked_2019",
+                      "likely-traffic-accident_2019",
+                      "police-corruption_2019",
+                      "trust_in_sci_index")
+
+data_combined <- data_combined %>% 
+  select(country:sub_region, all_of(vars_of_interest))
+
+str(data_combined)
+
+```
+
+# Check whether data is normally distributed:
+```{r}
+
+# Long format:
+data_combined_long <- data_combined %>%
+  mutate(`GDP per capita (US dollars)_2019` = str_replace_all(`GDP per capita (US dollars)_2019`, ",", "")) %>% 
+  mutate_at(vars(`Current health expenditure (% of GDP)_2018`:`trust_in_sci_index`), 
+            ~as.numeric(.)) %>% 
+  pivot_longer(cols = c(`Current health expenditure (% of GDP)_2018`:`trust_in_sci_index`),
+               names_to = "var",
+               values_to = "value")
+
+# Get descriptive statistics:
+data_stats <- data_combined_long %>% 
+  select(var, value) %>% 
+  drop_na(value) %>% 
+  group_by(var) %>% 
+  nest() %>% 
+  mutate(desc_stat = map(data, ~pastecs::stat.desc(., basic = FALSE, norm = TRUE))) %>% 
+  select(-data) %>% 
+  unnest() %>% 
+  ungroup() %>% 
+  mutate(stat = rep(c("median", "mean", "SE_mean", "CI_mean_95", "var", 
+                      "std_dev", "coef_var", "skewness", "skew_2SE", "kurtosis", 
+                      "kurt_2SE", "normtest_W", "normtest_p"), length(vars_of_interest)))
+
+# Isolate non-normal distributions:
+non_normal_vars <- data_stats %>% 
+  filter(stat %in% c("skew_2SE", "kurt_2SE", "normtest_p")) %>% 
+  spread(stat, value) %>% 
+  select(var, normtest_p, skew_2SE, kurt_2SE) %>% 
+  mutate(normal = ifelse((skew_2SE < 1.5 & -1.5 < skew_2SE) & (kurt_2SE < 1.5 & -1.5 < kurt_2SE), 1, 0)) %>% 
+  filter(normal == 0) %>% 
+  pull(var)
+
+```
+
+# Transform non-normally distributed variables:
+
+Log transformation:
+```{r}
+
+# Log-transform data:
+log_data_combined_long <- data_combined_long %>%
+  select(var, value) %>% 
+  drop_na(value) %>%
+  filter(var %in% non_normal_vars) %>% 
+  group_by(var) %>% 
+  nest() %>% 
+  mutate(log_transformed = map(data, ~log(.))) %>% 
+  select(-data) %>% 
+  unnest()
+
+# Test for normality:
+log_data_stats <- log_data_combined_long %>% 
+  group_by(var) %>% 
+  nest() %>% 
+  mutate(desc_stat = map(data, ~pastecs::stat.desc(., basic = FALSE, norm = TRUE))) %>% 
+  select(-data) %>% 
+  unnest() %>% 
+  ungroup() %>% 
+  mutate(stat = rep(c("median", "mean", "SE_mean", "CI_mean_95", "var", 
+                      "std_dev", "coef_var", "skewness", "skew_2SE", "kurtosis", 
+                      "kurt_2SE", "normtest_W", "normtest_p"), length(non_normal_vars)))
+
+# Check if there are still non-normal variables:
+non_normal_vars <- log_data_stats %>% 
+  filter(stat %in% c("skew_2SE", "kurt_2SE", "normtest_p")) %>% 
+  spread(stat, value) %>% 
+  select(var, normtest_p, skew_2SE, kurt_2SE) %>% 
+  mutate(normal = ifelse((skew_2SE < 1.5 & -1.5 < skew_2SE) & (kurt_2SE < 1.5 & -1.5 < kurt_2SE), 1, 0)) %>% 
+  filter(normal == 0) %>% 
+  pull(var)
+
+# List of variables to be log transformed:
+log_vars <- log_data_stats %>% 
+  filter(stat %in% c("skew_2SE", "kurt_2SE", "normtest_p")) %>% 
+  spread(stat, value) %>% 
+  select(var, normtest_p, skew_2SE, kurt_2SE) %>% 
+  mutate(normal = ifelse((skew_2SE < 1.5 & -1.5 < skew_2SE) & (kurt_2SE < 1.5 & -1.5 < kurt_2SE), 1, 0)) %>% 
+  filter(normal == 1) %>% 
+  pull(var)
+  
+```
+
+Square-root transformation:
+```{r}
+
+# Square-root data:
+sqrt_data_combined_long <- data_combined_long %>%
+  select(var, value) %>%
+  drop_na(value) %>%
+  filter(var %in% non_normal_vars) %>%
+  group_by(var) %>%
+  nest() %>%
+  mutate(sqrt_transformed = map(data, ~sqrt(.))) %>%
+  select(-data) %>%
+  unnest()
+
+# Test for normality:
+sqrt_data_stats <- sqrt_data_combined_long %>%
+  group_by(var) %>%
+  nest() %>%
+  mutate(desc_stat = map(data, ~pastecs::stat.desc(., basic = FALSE, norm = TRUE))) %>%
+  select(-data) %>%
+  unnest() %>%
+  ungroup() %>%
+  mutate(stat = rep(c("median", "mean", "SE_mean", "CI_mean_95", "var",
+                      "std_dev", "coef_var", "skewness", "skew_2SE", "kurtosis",
+                      "kurt_2SE", "normtest_W", "normtest_p"), length(non_normal_vars)))
+
+# Check if there are still non-normal variables:
+non_normal_vars <- sqrt_data_stats %>%
+  filter(stat %in% c("skew_2SE", "kurt_2SE", "normtest_p")) %>% 
+  spread(stat, value) %>% 
+  select(var, normtest_p, skew_2SE, kurt_2SE) %>% 
+  mutate(normal = ifelse((skew_2SE < 1.5 & -1.5 < skew_2SE) & (kurt_2SE < 1.5 & -1.5 < kurt_2SE), 1, 0)) %>%
+  filter(normal == 0) %>%
+  pull(var)
+
+# List of variables to be sqrt transformed:
+sqrt_vars <- sqrt_data_stats %>% 
+  filter(stat %in% c("skew_2SE", "kurt_2SE", "normtest_p")) %>% 
+  spread(stat, value) %>% 
+  select(var, normtest_p, skew_2SE, kurt_2SE) %>% 
+  mutate(normal = ifelse((skew_2SE < 1.5 & -1.5 < skew_2SE) & (kurt_2SE < 1.5 & -1.5 < kurt_2SE), 1, 0)) %>% 
+  filter(normal == 1) %>% 
+  pull(var)
+
+```
+
+# Keep normally-distributed variables only:
+```{r}
+
+data_comb_long_transformed <- data_combined_long %>% 
+  drop_na(value) %>% 
+  filter(!var %in% non_normal_vars) %>% 
+  mutate(value = case_when(
+           var %in% log_vars ~ log(value),
+           var %in% sqrt_vars ~ sqrt(value), 
+           TRUE ~ value),
+         var = case_when(
+           var %in% log_vars ~ str_c("log_", var),
+           var %in% sqrt_vars ~ str_c("sqrt_", var),
+           TRUE  ~ var))
+
+write_rds(data_comb_long_transformed, "../data-processed/full-data-set_transformed-variables.rds")
+
+```
+
+
+
+
+
+
+
+

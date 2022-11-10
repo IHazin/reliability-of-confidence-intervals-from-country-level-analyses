@@ -1,0 +1,629 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+
+library(tidyverse)
+library(readxl)
+library(haven)
+
+```
+
+# Read data:
+```{r}
+
+# Country info:
+country_info <- read_csv("https://raw.githubusercontent.com/lukes/ISO-3166-Countries-with-Regional-Codes/master/all/all.csv") %>% 
+  select(country = name, 
+         region, 
+         sub_region = `sub-region`) %>% 
+  # Correct country names:
+  mutate(country = case_when(
+    country == "Bolivia (Plurinational State of)" ~ "Bolivia",
+    country == "Côte d'Ivoire" ~ "Cote d'Ivoire",
+    country == "Czechia" ~ "Czech Republic",
+    country == "Korea, Republic of" ~ "South Korea",
+    country == "United Kingdom of Great Britain and Northern Ireland" ~ "United Kingdom",
+    country == "United States of America" ~ "United States",
+    country == "Taiwan, Province of China" ~ "Taiwan",
+    country == "Venezuela (Bolivarian Republic of)" ~ "Venezuela",
+    TRUE ~ country))
+
+
+# World Bank's World Development Indicators:
+wb_data <- read_xlsx("../data-raw/World Bank_data/World-development-indicators_World Bank.xlsx")
+
+
+# Gallup files:
+wgm <- read_sav("../data-raw/Gallup_data/Welcome-Global-Monitor_Gallup.sav")
+wrp <- read_sav("../data-raw/Gallup_data/World-Risk-Poll_Gallup.sav")
+
+
+# United Nations files:
+# List all files in the UN_data folder:
+filenames <- dir("../data-raw/UN_data/")
+
+# Put file names in a column:
+un_data <- tibble(name = filenames)
+
+locale <- readr::locale(encoding = "latin1")
+
+# Read csv files:
+un_data <- un_data %>%
+  filter(name != "List of countries_UN.xls") %>% 
+  mutate(name = str_c("../data-raw/UN_data/", name),
+         full_data = map(name, ~read_csv(., locale = locale)))
+
+```
+
+
+# Clean data:
+
+## World Bank:
+```{r}
+
+wb_data_clean <- wb_data %>% 
+  rename(country = `Country Name`,
+         var = `Series Name`) %>% 
+  select(country, var, `2017`, `2018`, `2019`, `2020`) %>% 
+  # Correct country names:
+  mutate(country = case_when(
+    country == "Bahamas, The" ~ "Bahamas",
+    country == "Congo, Dem. Rep." ~ "Congo, Democratic Republic of the",
+    country == "Congo, Rep." ~ "Congo",
+    country == "Egypt, Arab Rep." ~ "Egypt",
+    country == "Gambia, The" ~ "Gambia",
+    country == "Hong Kong SAR, China" ~ "Hong Kong",
+    country == "Iran, Islamic Rep." ~ "Iran (Islamic Republic of)",
+    country == "Korea, Rep." ~ "South Korea",
+    country == "Kyrgyz Republic" ~ "Kyrgyzstan",
+    country == "Lao PDR" ~ "Lao People's Democratic Republic",
+    country == "Macao SAR, China" ~ "Macao",
+    country == "Micronesia, Fed. Sts." ~ "Micronesia (Federated States of)",
+    country == "Moldova" ~ "Moldova, Republic of",
+    country == "Slovak Republic" ~ "Slovakia",
+    country == "Tanzania" ~ "Tanzania, United Republic of",
+    country == "Venezuela, RB" ~ "Venezuela",
+    country == "Vietnam" ~ "Viet Nam",
+    country == "Yemen, Rep." ~ "Yemen",
+    TRUE ~ country)) %>% 
+  # Remove non-countries:
+  left_join(country_info) %>% 
+  drop_na(region)
+  
+wb_data_clean <- wb_data_clean %>% 
+  # Long format:
+  pivot_longer(cols = c(`2017`, `2018`, `2019`, `2020`),
+               names_to = "year",
+               values_to = "values") %>%
+  # Drop missing values:
+  filter(values != "NA") %>% 
+  mutate(values = as.numeric(values))
+
+# Isolate variables for which there are data from at least 155 countries:
+wb_suitable_vars <- wb_data_clean %>%  
+  group_by(var, year) %>% 
+  count() %>%
+  filter(n >= 135) %>% 
+  group_by(var) %>%
+  # Filter the last year data was collected:
+  filter(year == max(year)) %>% 
+  unite("var_year", var, year, sep = "_")
+
+wb_data_clean <- wb_data_clean %>% 
+  unite("var_year", var, year, sep = "_") %>%
+  filter(var_year %in% wb_suitable_vars$var_year) %>% 
+  spread(var_year, values)
+
+write_rds(wb_data_clean, "../data-processed/World Bank data_clean.rds")
+
+```
+
+## Gallup:
+
+Wellcome Global Monitor, 2018:
+```{r}
+
+wgm_data_clean <- wgm %>% 
+  select(country = WP5,
+         pop_wgt = PROJWT,
+         year = YEAR_CALENDAR,
+         trust_sci = WGM_Index,
+         WGM_Indexr,
+         view_of_sci = ViewOfScience,
+         age = Age,
+         gender = Gender) %>% 
+  mutate(country = as.character(as_factor(country)),
+         # Correct country names:
+         country = case_when(
+           country == "Congo, Rep." ~ "Congo",
+           country == "Iran, Islamic Rep." ~ "Iran (Islamic Republic of)",
+           country == "Côte d'Ivoire" ~ "Cote d'Ivoire",
+           country == "Lao PDR" ~ "Lao People's Democratic Republic",
+           country == "Macedonia" ~ "North Macedonia",
+           country == "Moldova" ~ "Moldova, Republic of",
+           country == "Palestinian Territories" ~ "Palestine, State of",
+           country == "Russia" ~ "Russian Federation",
+           country == "Tanzania" ~ "Tanzania, United Republic of",
+           country == "The Gambia" ~ "Gambia",
+           country == "Vietnam" ~ "Viet Nam",
+           TRUE ~ country), 
+         id = 1:nrow(.)) %>% 
+  left_join(country_info) %>% 
+  drop_na(region)
+
+# Number of distinct countries:
+wgm_data_clean %>% 
+  distinct(country, year)
+
+# Trust in science index per country (taking into account the effects of age and gender):
+m <- lm(trust_sci ~ country + age + gender, weights = pop_wgt, data = wgm_data_clean)
+summary(m)
+
+trust_sci_data <- emmeans::emmeans(m, ~ country) %>% 
+  as.data.frame() %>% 
+  select(country, trust_in_sci_index = emmean)
+
+write_rds(trust_sci_data, "../data-processed/Gallup_Trust in science index_clean.rds")
+
+```
+
+World Risk Poll, 2019:
+```{r}
+
+wrp_data_clean <- wrp %>% 
+  select(country = Country,
+         year = Year,
+         world_regions = GlobalRegion,
+         wgt = WGT,
+         proj_wgt = projection_weight,
+         age = Age,
+         gender = Gender,
+         climate_change_threat = L5,
+         worried_harm_food = L6A,
+         worried_harm_water = L6B,
+         worried_harm_crime = L6C,
+         worried_harm_weather = L6D,
+         likely_harm_food = L7A,
+         likely_harm_water = L7B,
+         likely_harm_crime = L7C,
+         likely_harm_weather = L7D,
+         likely_traffic_accident = L9A,
+         likely_physically_attacked = L9B,
+         likely_drowning = L9D,
+         general_corruption = L17B,
+         police_corruption = L17C) %>%
+  # Correct country names:
+  mutate(country = case_when(
+           country == "Bosnia Herzegovina" ~ "Bosnia and Herzegovina",
+           country == "Congo Brazzaville" ~ "Congo",
+           country == "Iran" ~ "Iran (Islamic Republic of)",
+           country == "Ivory Coast" ~ "Cote d'Ivoire",
+           country == "Laos" ~ "Lao People's Democratic Republic",
+           country == "Moldova" ~ "Moldova, Republic of",
+           country == "Palestine" ~ "Palestine, State of",
+           country == "Russia" ~ "Russian Federation",
+           country == "Tanzania" ~ "Tanzania, United Republic of",
+           country == "Vietnam" ~ "Viet Nam",
+           TRUE ~ country)) %>% 
+  left_join(country_info) %>% 
+  drop_na(region)
+  
+wrp_data_clean <- wrp_data_clean %>%
+  mutate_at(vars(climate_change_threat:police_corruption), ~as.numeric(.)) %>%  
+  # Re-code some of the variables:
+  # That way, 3 means either 'Very worried' or 'Very likely', and 1 means either 'Not worried' or 'Not likely at all'. The interpretation of the means is more intuitive this way. 
+  mutate_at(vars(climate_change_threat:likely_harm_weather, general_corruption, police_corruption), ~(. - 4) * (-1)) %>% 
+  # Long format:
+  pivot_longer(cols = c(climate_change_threat:police_corruption),
+               names_to = "var",
+               values_to = "values") %>% 
+  # Drop null answers:
+  filter(!values %in% c(-95, -94, 98, 99)) %>% 
+  drop_na(values)
+
+# Number of distinct countries:
+wrp_data_clean %>% 
+  distinct(country)
+
+# Get country means (adjusted for age and gender):
+wrp_data_nested <- wrp_data_clean %>% 
+  zap_labels() %>% 
+  group_by(var) %>% 
+  nest()
+
+wrp_country_means <- wrp_data_nested %>% 
+  mutate(model = map(data, ~lm(values ~ country + age + gender, weights = proj_wgt, data = .)),
+         emm = map(model, ~emmeans::emmeans(.x, ~ country)),
+         adj_means = map(emm, ~ .x %>% as.data.frame)) %>% 
+  select(var, adj_means) %>% 
+  unnest()
+
+wrp_country_means <- wrp_country_means %>% 
+  mutate(year = 2019) %>% 
+  select(country, var, year, emmean) %>%
+  left_join(country_info) %>% 
+  mutate(var = str_replace_all(var, "_", "-")) %>% 
+  unite("var_year", var, year, sep = "_") %>% 
+  spread(var_year, emmean)
+
+write_rds(wrp_country_means, "../data-processed/Gallup_World Risk Poll_clean.rds")
+
+```
+
+## United Nations:
+
+Function to correct country names:
+```{r}
+
+correct_country_names <- function(data) {
+  
+  data <- data %>% 
+    mutate(country = case_when(
+           country == "Bolivia (Plurin. State of)" ~ "Bolivia",
+           country == "China, Hong Kong SAR" ~ "Hong Kong",
+           country == "China, Macao SAR" ~ "Macao",
+           country == "Côte d\u0092Ivoire" ~ "Cote d'Ivoire",
+           country == "Czechia" ~ "Czech Republic",
+           country == "Dem. Rep. of the Congo" ~ "Congo, Democratic Republic of the",
+           country == "Lao People's Dem. Rep." ~ "Lao People's Democratic Republic",
+           country == "Micronesia (Fed. States of)" ~ "Micronesia (Federated States of)",
+           country == "Republic of Korea" ~ "South Korea",
+           country == "Republic of Moldova" ~ "Moldova, Republic of",
+           country == "State of Palestine" ~ "Palestine, State of",
+           country == "United Rep. of Tanzania" ~ "Tanzania, United Republic of",
+           country == "United States of America" ~ "United States",
+           country == "Venezuela (Boliv. Rep. of)" ~ "Venezuela",
+           TRUE ~ country))
+  
+  return(data)
+}
+
+```
+
+Agricultural index:
+```{r}
+
+agri_data <- un_data %>%
+  filter(str_detect(name, "Agricultural Index")) %>%
+  select(full_data) %>%
+  unnest()
+
+agri_data[1, 2] <- "Region_Country"
+colnames(agri_data) <- as.character(agri_data[1,])
+
+agri_data <- agri_data %>%
+  rename_all(~tolower(.)) %>%
+  slice(-1) %>%
+  select(-1) %>%
+  rename(country = region_country) %>% 
+  # Correct country names:
+  correct_country_names() %>% 
+  left_join(country_info) %>% 
+  drop_na(region)
+
+# Number of distinct countries:
+agri_data %>% 
+  drop_na(value) %>% 
+  group_by(series, year) %>% 
+  summarise(n_distinct(country)) %>% 
+  filter(year == max(year))
+
+```
+
+Expenditure on health:
+```{r}
+
+health_data <- un_data %>%
+  filter(str_detect(name, "Expenditure on health")) %>%
+  select(full_data) %>%
+  unnest()
+
+health_data[1,2] <- "Region_Country"
+colnames(health_data) <- as.character(health_data[1,])
+
+health_data <- health_data %>%
+  rename_all(~tolower(.)) %>%
+  slice(-1) %>%
+  select(-1) %>%
+  rename(country = region_country) %>% 
+  # Correct country names:
+  correct_country_names() %>% 
+  left_join(country_info) %>% 
+  drop_na(region)
+
+# Number of distinct countries:
+health_data %>% 
+  drop_na(value) %>% 
+  group_by(series, year) %>% 
+  summarise(n_distinct(country)) %>% 
+  filter(year == max(year))
+
+```
+
+GDP and GDP Per Capita:
+```{r}
+
+gdp_data <- un_data %>%
+  filter(str_detect(name, "GDP and GDP Per Capita")) %>%
+  select(full_data) %>%
+  unnest()
+
+gdp_data[1,2] <- "Region_Country"
+colnames(gdp_data) <- as.character(gdp_data[1,])
+
+gdp_data <- gdp_data %>%
+  rename_all(~tolower(.)) %>%
+  slice(-1) %>%
+  select(-1) %>%
+  rename(country = region_country) %>% 
+  # Correct country names:
+  correct_country_names() %>% 
+  left_join(country_info) %>% 
+  drop_na(region)
+
+# Number of countries with non-NA data:
+gdp_data %>%
+  drop_na(value) %>%
+  group_by(series, year) %>%
+  summarise(n_distinct(country)) %>%
+  filter(year == max(year))
+
+```
+
+Labour Force and Unemployment:
+```{r}
+
+labour_data <- un_data %>%
+  filter(str_detect(name, "Labour Force")) %>%
+  select(full_data) %>%
+  unnest()
+
+labour_data[1,2] <- "Region_Country"
+colnames(labour_data) <- as.character(labour_data[1,])
+
+labour_data <- labour_data %>%
+  rename_all(~tolower(.)) %>%
+  slice(-1) %>%
+  select(-1) %>%
+  rename(country = region_country) %>% 
+  # Correct country names:
+  correct_country_names() %>% 
+  left_join(country_info) %>% 
+  drop_na(region)
+
+# Number of countries with non-NA data:
+labour_data %>%
+  drop_na(value) %>%
+  group_by(series, year) %>%
+  summarise(n_distinct(country)) %>%
+  filter(year == max(year))
+
+```
+
+Population Growth, Fertility and Mortality Indicators:
+```{r}
+
+popu_data <- un_data %>%
+  filter(str_detect(name, "Population Growth, Fertility")) %>%
+  select(full_data) %>%
+  unnest()
+
+popu_data[1,2] <- "Region_Country"
+colnames(popu_data) <- as.character(popu_data[1,])
+
+popu_data <- popu_data %>%
+  rename_all(~tolower(.)) %>%
+  slice(-1) %>%
+  select(-1) %>%
+  rename(country = region_country) %>% 
+  # Correct country names:
+  correct_country_names() %>% 
+  left_join(country_info) %>% 
+  drop_na(region)
+
+# Number of countries with non-NA data:
+popu_data %>%
+  drop_na(value) %>%
+  group_by(series, year) %>%
+  summarise(n_distinct(country)) %>%
+  filter(year == max(year))
+
+```
+
+Population, Surface Area and Density:
+```{r}
+
+area_data <- un_data %>%
+  filter(str_detect(name, "Population, Surface Area")) %>%
+  select(full_data) %>%
+  unnest()
+
+area_data[1,2] <- "Region_Country"
+colnames(area_data) <- as.character(area_data[1,])
+
+area_data <- area_data %>%
+  rename_all(~tolower(.)) %>%
+  slice(-1) %>%
+  select(-1) %>%
+  rename(country = region_country) %>% 
+  # Correct country names:
+  correct_country_names() %>% 
+  left_join(country_info) %>% 
+  drop_na(region)
+
+# Number of countries with non-NA data:
+area_data %>%
+  drop_na(value) %>%
+  group_by(series, year) %>%
+  summarise(n_distinct(country)) %>%
+  filter(year == max(year))
+
+```
+
+Production, Trade and Supply of Energy:
+```{r}
+
+energy_data <- un_data %>%
+  filter(str_detect(name, "Production, Trade and Supply of Energy")) %>%
+  select(full_data) %>%
+  unnest()
+
+energy_data[1,2] <- "Region_Country"
+colnames(energy_data) <- as.character(energy_data[1,])
+
+energy_data <- energy_data %>%
+  rename_all(~tolower(.)) %>%
+  slice(-1) %>%
+  select(-1) %>%
+  rename(country = region_country) %>% 
+  # Correct country names:
+  correct_country_names() %>% 
+  left_join(country_info) %>% 
+  drop_na(region)
+
+# Number of countries with non-NA data:
+energy_data %>%
+  drop_na(value) %>%
+  group_by(series, year) %>%
+  summarise(n_distinct(country)) %>%
+  filter(year == max(year))
+
+```
+
+Seats held by women in parliament:
+```{r}
+
+seats_data <- un_data %>%
+  filter(str_detect(name, "Seats held by women")) %>%
+  select(full_data) %>%
+  unnest()
+
+seats_data[1,2] <- "Region_Country"
+colnames(seats_data) <- as.character(seats_data[1,])
+
+seats_data <- seats_data %>%
+  rename_all(~tolower(.)) %>%
+  slice(-1) %>%
+  select(-1) %>%
+  rename(country = region_country) %>% 
+  # Correct country names:
+  correct_country_names() %>% 
+  left_join(country_info) %>% 
+  drop_na(region)
+
+# Number of countries with non-NA data:
+seats_data %>%
+  drop_na(value) %>%
+  group_by(series, year) %>%
+  summarise(n_distinct(country)) %>%
+  filter(year == max(year))
+
+```
+
+Threatened species
+```{r}
+
+threat_data <- un_data %>%
+  filter(str_detect(name, "Threatened Species")) %>%
+  select(full_data) %>%
+  unnest()
+
+threat_data[1,2] <- "Region_Country"
+colnames(threat_data) <- as.character(threat_data[1,])
+
+threat_data <- threat_data %>%
+  rename_all(~tolower(.)) %>%
+  slice(-1) %>%
+  select(-1) %>%
+  rename(country = region_country) %>% 
+  # Correct country names:
+  correct_country_names() %>% 
+  left_join(country_info) %>% 
+  drop_na(region)
+
+# Number of countries with non-NA data:
+threat_data %>%
+  drop_na(value) %>%
+  group_by(series, year) %>%
+  summarise(n_distinct(country)) %>%
+  filter(year == max(year))
+
+```
+
+Total Imports Exports and Balance of Trade
+```{r}
+
+trade_data <- un_data %>%
+  filter(str_detect(name, "Total Imports Exports")) %>%
+  select(full_data) %>%
+  unnest()
+
+trade_data[1,2] <- "Region_Country"
+colnames(trade_data) <- as.character(trade_data[1,])
+
+trade_data <- trade_data %>%
+  rename_all(~tolower(.)) %>%
+  slice(-1) %>%
+  select(-1) %>%
+  rename(country = region_country) %>% 
+  # Correct country names:
+  correct_country_names() %>% 
+  left_join(country_info) %>% 
+  drop_na(region)
+
+# Number of countries with non-NA data:
+trade_data %>%
+  drop_na(value) %>%
+  group_by(series, year) %>%
+  summarise(n_distinct(country)) %>%
+  filter(year == max(year))
+
+```
+
+Join data-sets:
+```{r}
+
+un_data_clean <- bind_rows(agri_data,
+                           area_data,
+                           energy_data,
+                           gdp_data,
+                           health_data,
+                           labour_data,
+                           popu_data,
+                           seats_data,
+                           threat_data,
+                           trade_data)
+
+un_data_clean <- un_data_clean %>% 
+  group_by(series) %>% 
+  filter(year == max(year))
+
+un_data_clean <- un_data_clean %>% 
+  select(country, region, sub_region, series, year, value) %>% 
+  unite("var_year", series, year, sep = "_") %>% 
+  spread(var_year, value)
+
+write_rds(un_data_clean, "../data-processed/un-data-clean.rds")
+
+```
+
+
+# Join data-sets:
+```{r}
+
+data_combined <- un_data_clean %>% 
+  full_join(wb_data_clean) %>% 
+  full_join(wrp_country_means) %>% 
+  full_join(trust_sci_data)
+
+names(data_combined)
+
+write_rds(data_combined, "../data-processed/full-data-set_United Nations_World Bank_Gallup.rds")
+
+```
+
+
+

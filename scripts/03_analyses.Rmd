@@ -1,0 +1,334 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+
+library(tidyverse)
+library(haven)
+library(boot)
+
+```
+
+# Read data:
+```{r}
+
+# Data-set containing 22 variables from the World Bank, the United Nations, and Gallup:
+data_combined <- read_rds("../data-processed/full-data-set_transformed-variables.rds")
+
+```
+
+# Prepare data-set suitable for upcoming analyses:
+```{r}
+
+# Data-set containing all combinations of variables:
+data_clean <- data_combined %>% 
+  distinct(var) %>% 
+  rename(var1 = var) %>% 
+  mutate(var2 = var1) %>% 
+  complete(var1, var2) %>% 
+  filter(var1 != var2)
+
+# Add data pertaining to the variables:
+data_clean <- data_clean %>% 
+  left_join(data_combined, by = c("var1" = "var")) %>% 
+  rename(data1 = value) %>% 
+  left_join(data_combined %>% 
+              select(-region, -sub_region), by = c("country", "var2" = "var")) %>% 
+  rename(data2 = value) 
+
+# Nest:
+data_nested <- data_clean %>% 
+  rename(outcome_var = var1, outcome_value = data1, predictor_var = var2, predictor_value = data2) %>% 
+  group_by(outcome_var, predictor_var) %>% 
+  nest()
+
+```
+
+# Analyses:
+
+## Full data-set: 
+
+The number of countries included in each analysis ranges from 138 to 226, with mean of 170 (SD = 27):
+```{r}
+
+data_clean %>% 
+  group_by(var1, var2) %>% 
+  count() %>% 
+  ungroup() %>% 
+  summarise(min(n), max(n), mean(n), sd(n))
+
+data_clean %>% 
+  group_by(var1, var2) %>% 
+  count() %>% 
+  ggplot(aes(x = n)) +
+  geom_histogram(fill = "lightblue", color = "black", binwidth = 10)
+
+```
+
+For each pair outcome-predictor, bootstrap b-values and confidence intervals:
+```{r}
+
+# Function to bootstrap:
+boot_slope <- function(data,i) {
+  
+  # Run linear model:
+  m <- lm(data$outcome_value[i] ~ data$predictor_value[i])
+  
+  # Retrieve b-value:
+  summary <- summary.lm(m)
+  summary$coefficients[2]
+  
+}
+
+# Bootstrap b-values and confidence intervals: This takes half an hour to run!
+# boot_bvalues <- data_nested %>%
+#   mutate(boot_b = map(data, ~boot(., boot_slope, 2000)),
+#          b_value = map(boot_b, ~unlist(.[[1]][1])),
+#          boot_ci = map(boot_b, ~boot.ci(.)),
+#          ci = map(boot_ci, ~.$normal))
+# 
+# write_rds(boot_bvalues, "../data-processed/bootstrapped-b-values_full-data.rds")
+boot_bvalues <- read_rds("../data-processed/bootstrapped-b-values_full-data.rds")
+
+bvalues <- boot_bvalues %>% 
+  select(-data, -boot_b, -boot_ci, -ci) %>% 
+  unnest(b_value) %>% 
+  rename(true_b_value = b_value)
+
+ci <- boot_bvalues %>% 
+  select(-data, -boot_b, -boot_ci, -b_value) %>% 
+  mutate(lower_boundary = map(ci, ~.[[2]]),
+         upper_boundary = map(ci, ~.[[3]])) %>% 
+  unnest(c(lower_boundary, upper_boundary))
+
+```
+
+## Sub-samples of countries:
+
+How often is the true slope within a sub-sample confidence interval?
+
+### Internation Study of Metanorms (ISMN) - 2019 data:
+```{r}
+
+ismn_countries <- read_rds("../data-raw/ISMN_list-of-countries.rds")
+
+# Nest data:
+ismn_data <- data_nested %>% 
+  unnest() %>% 
+  filter(country %in% ismn_countries) %>% 
+  group_by(outcome_var, predictor_var) %>% 
+  nest() 
+
+# Bootstrap b-values and confidence intervals:
+# ismn_boot <- ismn_data %>%
+#   mutate(boot_b = map(data, ~boot(., boot_slope, 2000)),
+#          b_value = map(boot_b, ~unlist(.[[1]][1])),
+#          boot_ci = map(boot_b, ~boot.ci(.)),
+#          ci = map(boot_ci, ~.$normal))
+# 
+# write_rds(ismn_boot, "../data-processed/bootstrapped-b-values_ISMN-data.rds")
+ismn_boot <- read_rds("../data-processed/bootstrapped-b-values_ISMN-data.rds")
+
+# Isolate confidence intervals:
+ismn_ci <- ismn_boot %>% 
+  select(-data, -boot_b, -boot_ci, -b_value) %>% 
+  mutate(lower_boundary = map(ci, ~.[[2]]),
+         upper_boundary = map(ci, ~.[[3]])) %>% 
+  unnest(c(lower_boundary, upper_boundary)) %>% 
+  select(-ci)
+
+# How often is the true slope within the sub-sample confidence interval?
+ismn_result <- ismn_ci %>% 
+  left_join(bvalues) %>% 
+  mutate(within_ci = ifelse(true_b_value >= lower_boundary & true_b_value <= upper_boundary, 1, 0)) %>% 
+  ungroup() %>% 
+  summarise(mean(within_ci))
+
+```
+
+### World Values Survey (WVS) - Wave 7:
+```{r}
+
+wvs_countries <- read_rds("../data-raw/WVS_list-of-countries.rds")
+
+# Nest data:
+wvs_data <- data_nested %>% 
+  unnest() %>% 
+  filter(country %in% wvs_countries) %>% 
+  group_by(outcome_var, predictor_var) %>% 
+  nest() 
+
+# Bootstrap b-values and confidence intervals:
+# wvs_boot <- wvs_data %>%
+#   mutate(boot_b = map(data, ~boot(., boot_slope, 2000)),
+#          b_value = map(boot_b, ~unlist(.[[1]][1])),
+#          boot_ci = map(boot_b, ~boot.ci(.)),
+#          ci = map(boot_ci, ~.$normal))
+# 
+# write_rds(wvs_boot, "../data-processed/bootstrapped-b-values_WVS-data.rds")
+wvs_boot <- read_rds("../data-processed/bootstrapped-b-values_WVS-data.rds")
+
+# Isolate confidence intervals:
+wvs_ci <- wvs_boot %>% 
+  select(-data, -boot_b, -boot_ci, -b_value) %>% 
+  mutate(lower_boundary = map(ci, ~.[[2]]),
+         upper_boundary = map(ci, ~.[[3]])) %>% 
+  unnest(c(lower_boundary, upper_boundary)) %>% 
+  select(-ci)
+
+# How often is the true slope within the sub-sample confidence interval?
+wvs_result <- wvs_ci %>% 
+  left_join(bvalues) %>% 
+  mutate(within_ci = ifelse(true_b_value >= lower_boundary & true_b_value <= upper_boundary, 1, 0)) %>% 
+  ungroup() %>% 
+  summarise(mean(within_ci))
+
+```
+
+### International Social Survey Programme (ISSP) - 2018 data:
+```{r}
+
+issp_countries <- read_rds("../data-raw/ISSP_list-of-countries.rds")
+
+# Nest data:
+issp_data <- data_nested %>% 
+  unnest() %>% 
+  filter(country %in% issp_countries) %>% 
+  group_by(outcome_var, predictor_var) %>% 
+  nest() 
+
+# Bootstrap b-values and confidence intervals:
+# issp_boot <- issp_data %>%
+#   mutate(boot_b = map(data, ~boot(., boot_slope, 2000)),
+#          b_value = map(boot_b, ~unlist(.[[1]][1])),
+#          boot_ci = map(boot_b, ~boot.ci(.)),
+#          ci = map(boot_ci, ~.$normal))
+# 
+# write_rds(issp_boot, "../data-processed/bootstrapped-b-values_ISSP-data.rds")
+issp_boot <- read_rds("../data-processed/bootstrapped-b-values_ISSP-data.rds")
+
+# Isolate confidence intervals:
+issp_ci <- issp_boot %>% 
+  select(-data, -boot_b, -boot_ci, -b_value) %>% 
+  mutate(lower_boundary = map(ci, ~.[[2]]),
+         upper_boundary = map(ci, ~.[[3]])) %>% 
+  unnest(c(lower_boundary, upper_boundary)) %>% 
+  select(-ci)
+
+# How often is the true slope within the sub-sample confidence interval?
+issp_result <- issp_ci %>% 
+  left_join(bvalues) %>% 
+  mutate(within_ci = ifelse(true_b_value >= lower_boundary & true_b_value <= upper_boundary, 1, 0)) %>% 
+  ungroup() %>% 
+  summarise(mean(within_ci))
+
+```
+
+### Programme for International Student Assessment (PISA) - 2015 data:
+```{r}
+
+pisa_countries <- read_rds("../data-raw/PISA_list-of-countries.rds")
+
+# Nest data:
+pisa_data <- data_nested %>% 
+  unnest() %>% 
+  filter(country %in% pisa_countries) %>% 
+  group_by(outcome_var, predictor_var) %>% 
+  nest() 
+
+# Bootstrap b-values and confidence intervals:
+# pisa_boot <- pisa_data %>%
+#   mutate(boot_b = map(data, ~boot(., boot_slope, 2000)),
+#          b_value = map(boot_b, ~unlist(.[[1]][1])),
+#          boot_ci = map(boot_b, ~boot.ci(.)),
+#          ci = map(boot_ci, ~.$normal))
+# 
+# write_rds(pisa_boot, "../data-processed/bootstrapped-b-values_PISA-data.rds")
+pisa_boot <- read_rds("../data-processed/bootstrapped-b-values_PISA-data.rds")
+
+# Isolate confidence intervals:
+pisa_ci <- pisa_boot %>% 
+  select(-data, -boot_b, -boot_ci, -b_value) %>% 
+  mutate(lower_boundary = map(ci, ~.[[2]]),
+         upper_boundary = map(ci, ~.[[3]])) %>% 
+  unnest(c(lower_boundary, upper_boundary)) %>% 
+  select(-ci)
+
+# How often is the true slope within the sub-sample confidence interval?
+pisa_result <- pisa_ci %>% 
+  left_join(bvalues) %>% 
+  mutate(within_ci = ifelse(true_b_value >= lower_boundary & true_b_value <= upper_boundary, 1, 0)) %>% 
+  ungroup() %>% 
+  summarise(mean(within_ci))
+
+```
+
+### Trends in International Mathematics and Science Study (TIMSS) - 2015 data:
+```{r}
+
+timss_countries <- read_rds("../data-raw/TIMSS_list-of-countries.rds")
+
+# Nest data:
+timss_data <- data_nested %>% 
+  unnest() %>% 
+  filter(country %in% timss_countries) %>% 
+  group_by(outcome_var, predictor_var) %>% 
+  nest() 
+
+# Bootstrap b-values and confidence intervals:
+# timss_boot <- timss_data %>%
+#   mutate(boot_b = map(data, ~boot(., boot_slope, 2000)),
+#          b_value = map(boot_b, ~unlist(.[[1]][1])),
+#          boot_ci = map(boot_b, ~boot.ci(.)),
+#          ci = map(boot_ci, ~.$normal))
+# 
+# write_rds(timss_boot, "../data-processed/bootstrapped-b-values_TIMSS-data.rds")
+timss_boot <- read_rds("../data-processed/bootstrapped-b-values_TIMSS-data.rds")
+
+# Isolate confidence intervals:
+timss_ci <- timss_boot %>% 
+  select(-data, -boot_b, -boot_ci, -b_value) %>% 
+  mutate(lower_boundary = map(ci, ~.[[2]]),
+         upper_boundary = map(ci, ~.[[3]])) %>% 
+  unnest(c(lower_boundary, upper_boundary)) %>% 
+  select(-ci)
+
+# How often is the true slope within the sub-sample confidence interval?
+timss_result <- timss_ci %>% 
+  left_join(bvalues) %>% 
+  mutate(within_ci = ifelse(true_b_value >= lower_boundary & true_b_value <= upper_boundary, 1, 0)) %>% 
+  ungroup() %>% 
+  summarise(mean(within_ci))
+
+```
+
+## Figure:
+```{r}
+
+data_combined <- ismn_result %>%
+  mutate(source = "ISMN") %>% 
+  bind_rows(wvs_result %>% mutate(source = "WVS"),
+            issp_result %>% mutate(source = "ISSP"),
+            pisa_result %>% mutate(source = "PISA"),
+            timss_result %>% mutate(source = "TIMSS"))
+
+write_rds(data_combined, "../data-processed/results-combined.rds")
+
+data_combined %>% 
+  ggplot(aes(x = source, y = `mean(within_ci)`)) +
+  geom_col(color = "black", fill = "lightblue") +
+  labs(x = NULL, y = "How often the true b-value is\nwithin sample's 95% confidence intervals") +
+  ylim(0, 1)
+
+```
+
+
+
+
+
+
+
+
+
